@@ -1,3 +1,4 @@
 supabase
 scikit-learn
 plotly
+requests
