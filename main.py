@@ -1,52 +1,109 @@
 import streamlit as st
-from supabase import create_client
 import pandas as pd
+import numpy as np
+from datetime import datetime
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+import plotly.graph_objects as go
 
-# ── Supabase 연결 ──────────────────────────────
-# secrets.toml (또는 Streamlit Cloud의 Secrets 설정)에 저장된 값을 불러와요
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-supabase = create_client(url, key)
+# ── 기본 화면 설정 ──────────────────────────────
+st.set_page_config(page_title="서울 기온 예측기", page_icon="🌤️", layout="centered")
+st.title("🌤️ 서울 기온 예측기")
+st.write("1907년부터 오늘까지 서울 기온 데이터를 가지고, 미래 기온을 예측해보는 앱이에요!")
 
-# ── 화면 기본 설정 ──────────────────────────────
-st.set_page_config(page_title="약속 잡기", page_icon="📅")
-st.title("📅 약속 잡기")
-st.write("모두가 편한 시간을 함께 찾아봐요 😊")
+# ── 데이터 불러오기 (캐시로 재요청 방지) ──────────────
+@st.cache_data
+def load_data():
+    url = "https://raw.githubusercontent.com/greatsong/modudata/main/data/seoul.csv"
+    try:
+        df = pd.read_csv(url, encoding="utf-8")
+    except UnicodeDecodeError:
+        df = pd.read_csv(url, encoding="cp949")
+    return df
 
-# 선택 가능한 시간 목록 (필요하면 자유롭게 수정하세요)
-시간목록 = [
-    "월요일 오전", "월요일 오후", "월요일 저녁",
-    "화요일 오전", "화요일 오후", "화요일 저녁",
-    "수요일 오전", "수요일 오후", "수요일 저녁",
-    "목요일 오전", "목요일 오후", "목요일 저녁",
-    "금요일 오전", "금요일 오후", "금요일 저녁",
-]
+df = load_data()
 
-# ── 입력 폼 ────────────────────────────────────
-이름 = st.text_input("이름을 입력해주세요")
-선택시간 = st.multiselect("가능한 시간을 모두 골라주세요", 시간목록)
+# 날짜 컬럼을 진짜 날짜 타입으로 바꾸고, 연도만 뽑아내기
+df["날짜"] = pd.to_datetime(df["날짜"])
+df["연도"] = df["날짜"].dt.year
 
-if st.button("제출"):
-    if not 이름:
-        st.warning("이름을 입력해주세요!")
-    elif not 선택시간:
-        st.warning("가능한 시간을 하나 이상 선택해주세요!")
-    else:
-        # 여러 개 선택한 시간을 콤마(,)로 이어 하나의 문자열로 저장해요
-        시간문자열 = ", ".join(선택시간)
-        supabase.table("votes").insert({"name": 이름, "times": 시간문자열}).execute()
-        st.success(f"{이름}님, 제출 완료되었어요! 감사합니다 🙌")
+# ── 연도별 평균기온 계산 ──────────────────────────
+# 연도별로 묶어서 평균기온의 평균과, 그 해 관측된 일수(count)를 같이 구함
+yearly = df.groupby("연도")["평균기온"].agg(["mean", "count"]).reset_index()
+yearly.columns = ["연도", "평균기온", "관측일수"]
 
-st.divider()
+# 올해(진행 중이라 데이터가 덜 쌓인 해)는 제외
+current_year = datetime.now().year
+yearly = yearly[yearly["연도"] != current_year]
 
-# ── 전체 명단 표시 ──────────────────────────────
-st.subheader("📋 지금까지 제출된 명단")
+# 관측일수가 너무 적은 해(첫 해, 전쟁 시기 등)는 평균이 왜곡되니 제외
+# 1년은 보통 365일 → 300일 미만이면 신뢰하기 어렵다고 보고 뺌
+yearly_filtered = yearly[yearly["관측일수"] >= 300].reset_index(drop=True)
 
-응답 = supabase.table("votes").select("*").execute()
-데이터 = 응답.data
+# ── 선형회귀 학습 ────────────────────────────────
+X = yearly_filtered[["연도"]].values           # 입력: 연도
+y = yearly_filtered["평균기온"].values          # 정답: 평균기온
 
-if 데이터:
-    df = pd.DataFrame(데이터)
-    st.dataframe(df[["name", "times"]], use_container_width=True)
-else:
-    st.info("아직 제출된 내용이 없어요. 첫 번째로 참여해보세요!")
+model = LinearRegression()
+model.fit(X, y)
+
+y_pred = model.predict(X)
+r2 = r2_score(y, y_pred)  # 모델이 실제 데이터를 얼마나 잘 설명하는지 나타내는 값
+
+# 학습에 사용한 데이터의 연도 범위 (이 밖은 미래 예측이라 조심해야 함)
+min_year = int(yearly_filtered["연도"].min())
+max_year = int(yearly_filtered["연도"].max())
+
+# ── R² 카드 표시 ─────────────────────────────────
+st.subheader("📊 모델 성능")
+st.metric("R² (결정계수)", f"{r2:.3f}")
+st.caption("R²는 우리 직선이 실제 기온 변화를 얼마나 잘 설명하는지 나타내는 값이에요 (1에 가까울수록 잘 맞아요).")
+
+# ── 슬라이더로 연도 선택 → 예측 ───────────────────
+st.subheader("🔮 연도를 골라 기온을 예측해보세요")
+selected_year = st.slider("연도 선택", 1900, 2100, value=current_year)
+
+predicted_temp = model.predict([[selected_year]])[0]
+
+st.metric(f"{selected_year}년 예측 평균기온", f"{predicted_temp:.1f} °C")
+
+# 학습 데이터 범위 밖이면 조심하라는 안내
+if selected_year < min_year or selected_year > max_year:
+    st.warning(f"⚠️ 참고용, 조심! 이 예측은 학습 데이터 범위({min_year}~{max_year}년)를 벗어난 값이에요.")
+
+# ── plotly 그래프: 실제 데이터 + 회귀 직선 ─────────
+st.subheader("📈 연도별 평균기온과 예측 직선")
+
+fig = go.Figure()
+
+# 실제 관측된 연도별 평균기온 (점)
+fig.add_trace(go.Scatter(
+    x=yearly_filtered["연도"], y=yearly_filtered["평균기온"],
+    mode="markers", name="실제 연도별 평균기온",
+    marker=dict(color="royalblue")
+))
+
+# 학습한 회귀 직선 (1900~2100년까지 쭉 그려보기)
+line_years = np.arange(1900, 2101)
+line_pred = model.predict(line_years.reshape(-1, 1))
+fig.add_trace(go.Scatter(
+    x=line_years, y=line_pred,
+    mode="lines", name="회귀 직선(예측선)",
+    line=dict(color="orange")
+))
+
+# 내가 고른 연도는 빨간 점으로 강조
+fig.add_trace(go.Scatter(
+    x=[selected_year], y=[predicted_temp],
+    mode="markers", name="선택한 연도",
+    marker=dict(color="red", size=13, symbol="star")
+))
+
+fig.update_layout(
+    xaxis_title="연도", yaxis_title="평균기온(°C)",
+    legend=dict(orientation="h", y=-0.2)
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.caption(f"※ 학습에는 관측일수가 충분한 {min_year}~{max_year}년 데이터만 사용했어요.")
