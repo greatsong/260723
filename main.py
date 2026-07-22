@@ -34,7 +34,7 @@ if st.button("제출"):
     else:
         # 여러 개 선택한 시간을 콤마(,)로 이어 하나의 문자열로 저장해요
         시간문자열 = ", ".join(선택시간)
-        supabase.table("votes").insert({"name": 이름, "times": 시간문자열}).execute()
+        supabase.table("260722").insert({"name": 이름, "times": 시간문자열}).execute()
         st.success(f"{이름}님, 제출 완료되었어요! 감사합니다 🙌")
 
 st.divider()
@@ -42,7 +42,7 @@ st.divider()
 # ── 전체 명단 표시 ──────────────────────────────
 st.subheader("📋 지금까지 제출된 명단")
 
-응답 = supabase.table("votes").select("*").execute()
+응답 = supabase.table("260722").select("*").execute()
 데이터 = 응답.data
 
 if 데이터:
